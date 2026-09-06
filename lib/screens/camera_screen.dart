@@ -1,10 +1,13 @@
 import 'dart:io';
+import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:gal/gal.dart';
+import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 
@@ -34,6 +37,9 @@ class _CameraScreenState extends State<CameraScreen> {
   double _minZoom = 1;
   double _maxZoom = 1;
   double _zoom = 1;
+  Uint8List? _stillBytes;
+  int _stillW = 1;
+  int _stillH = 1;
   late final List<_Placement> _layers;
 
   bool get _landscape =>
@@ -137,23 +143,48 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Future<void> _capture() async {
-    if (_saving || !_ready) return;
+    if (_saving || !_ready || _controller == null) return;
     setState(() => _saving = true);
     try {
-      await Future<void>.delayed(const Duration(milliseconds: 40));
+      final shot = await _controller!.takePicture();
+      final bytes = await File(shot.path).readAsBytes();
+      final decoded = img.decodeImage(bytes);
+      if (decoded == null) throw StateError('撮影画像を読めませんでした');
+
+      _stillBytes = bytes;
+      _stillW = decoded.width;
+      _stillH = decoded.height;
+      setState(() {});
+
+      if (mounted) {
+        await precacheImage(MemoryImage(bytes), context);
+      }
+      await WidgetsBinding.instance.endOfFrame;
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+
       final ctx = _boundaryKey.currentContext;
       final boundary = ctx?.findRenderObject() as RenderRepaintBoundary?;
       if (boundary == null) throw StateError('描画領域を取得できません');
-      final image = await boundary.toImage(pixelRatio: 3);
-      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      final image = await boundary.toImage(pixelRatio: 2);
+      final raw = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      final w = image.width;
+      final h = image.height;
       image.dispose();
-      if (byteData == null) throw StateError('画像化に失敗しました');
+      if (raw == null) throw StateError('画像化に失敗しました');
+
+      final raster = img.Image.fromBytes(
+        width: w,
+        height: h,
+        bytes: raw.buffer,
+        order: img.ChannelOrder.rgba,
+      );
+      final jpeg = img.encodeJpg(raster, quality: 86);
 
       final dir = await getTemporaryDirectory();
       final file = File(
-        '${dir.path}/chroma_${DateTime.now().millisecondsSinceEpoch}.png',
+        '${dir.path}/chroma_${DateTime.now().millisecondsSinceEpoch}.jpg',
       );
-      await file.writeAsBytes(byteData.buffer.asUint8List());
+      await file.writeAsBytes(jpeg);
       await Gal.putImage(file.path, album: 'ChromaCam');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -165,6 +196,7 @@ class _CameraScreenState extends State<CameraScreen> {
         const SnackBar(content: Text('保存に失敗しました')),
       );
     } finally {
+      _stillBytes = null;
       if (mounted) setState(() => _saving = false);
     }
   }
@@ -180,37 +212,48 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Widget _cameraPreview() {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final boxW = constraints.maxWidth;
-        final boxH = constraints.maxHeight;
-        if (boxW <= 0 || boxH <= 0) {
-          return const SizedBox.shrink();
-        }
-
-        var previewAR = _controller!.value.aspectRatio;
-        if (previewAR == 0) previewAR = 16 / 9;
-        if (!_landscape && previewAR > 1) previewAR = 1 / previewAR;
-        if (_landscape && previewAR < 1) previewAR = 1 / previewAR;
-
-        var width = boxW;
-        var height = width / previewAR;
-        if (height < boxH) {
-          height = boxH;
-          width = height * previewAR;
-        }
-
-        return ClipRect(
-          child: OverflowBox(
-            alignment: Alignment.center,
-            minWidth: width,
-            maxWidth: width,
-            minHeight: height,
-            maxHeight: height,
-            child: CameraPreview(_controller!),
+    if (_stillBytes != null) {
+      return ClipRect(
+        child: FittedBox(
+          fit: BoxFit.cover,
+          clipBehavior: Clip.hardEdge,
+          child: SizedBox(
+            width: _stillW.toDouble(),
+            height: _stillH.toDouble(),
+            child: Image.memory(
+              _stillBytes!,
+              width: _stillW.toDouble(),
+              height: _stillH.toDouble(),
+              fit: BoxFit.fill,
+              gaplessPlayback: true,
+            ),
           ),
-        );
-      },
+        ),
+      );
+    }
+
+    final preview = _controller!.value.previewSize;
+    if (preview == null || preview.width == 0 || preview.height == 0) {
+      return CameraPreview(_controller!);
+    }
+
+    final sensorW = preview.width;
+    final sensorH = preview.height;
+    final childW =
+        _landscape ? math.max(sensorW, sensorH) : math.min(sensorW, sensorH);
+    final childH =
+        _landscape ? math.min(sensorW, sensorH) : math.max(sensorW, sensorH);
+
+    return ClipRect(
+      child: FittedBox(
+        fit: BoxFit.cover,
+        clipBehavior: Clip.hardEdge,
+        child: SizedBox(
+          width: childW,
+          height: childH,
+          child: CameraPreview(_controller!),
+        ),
+      ),
     );
   }
 
@@ -371,7 +414,7 @@ class _CameraScreenState extends State<CameraScreen> {
           ),
           const Spacer(),
           Text(
-            _landscape ? '4:3' : '3:4',
+            _landscape ? '4:3  枠内を保存' : '3:4  枠内を保存',
             style: const TextStyle(color: Colors.white54, fontSize: 12),
           ),
           const SizedBox(width: 8),
@@ -416,10 +459,8 @@ class _CameraScreenState extends State<CameraScreen> {
               scrollDirection: Axis.horizontal,
               buildDefaultDragHandles: false,
               itemCount: _layers.length,
-              // ignore: deprecated_member_use
-              onReorder: (from, to) {
+              onReorderItem: (from, to) {
                 setState(() {
-                  if (to > from) to -= 1;
                   final item = _layers.removeAt(from);
                   _layers.insert(to, item);
                   _selected = to;
@@ -553,6 +594,14 @@ class _CameraScreenState extends State<CameraScreen> {
               ),
             ],
           ),
+          const SizedBox(height: 4),
+          Text(
+            '保存はシャッター時点のプレビュー枠です。ピンクの選択枠は入りません。',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.45),
+              fontSize: 10,
+            ),
+          ),
         ],
       ),
     );
@@ -564,13 +613,13 @@ class _Placement {
     required this.asset,
     required this.offset,
     required this.scale,
-  }) : visible = true, opacity = 1;
+  });
 
   final ProcessedAsset asset;
   Offset offset;
   double scale;
-  double opacity;
-  bool visible;
+  double opacity = 1;
+  bool visible = true;
 
   double get displayWidth => asset.width * scale * 0.35;
   double get displayHeight =>
@@ -682,18 +731,33 @@ class _GroundShadowPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final cx = shadow.cx * size.width;
-    final cy = shadow.cy * size.height;
-    final rx = (shadow.rx * size.width).clamp(8.0, size.width * 0.4);
-    final ry = (shadow.ry * size.height).clamp(3.0, 18.0);
-    final rect = Rect.fromCenter(
-      center: Offset(cx, cy),
-      width: rx * 2,
-      height: ry * 2,
+    final cy = (shadow.cy * size.height).clamp(0.0, size.height).toDouble();
+    final rx = (shadow.rx * size.width).clamp(12.0, size.width * 0.55);
+    final ry = (shadow.ry * size.height).clamp(5.0, 28.0);
+
+    final soft = Paint()
+      ..color = const Color(0x66000000)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 14);
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: Offset(cx, cy + ry * 0.15),
+        width: rx * 2.2,
+        height: ry * 2.4,
+      ),
+      soft,
     );
-    final paint = Paint()
+
+    final core = Paint()
       ..color = const Color(0x99000000)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8);
-    canvas.drawOval(rect, paint);
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: Offset(cx, cy),
+        width: rx * 1.7,
+        height: ry * 1.5,
+      ),
+      core,
+    );
   }
 
   @override

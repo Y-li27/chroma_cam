@@ -258,7 +258,7 @@ class ColorKeyService {
 
     for (var y = 0; y < h; y++) {
       for (var x = 0; x < w; x++) {
-        if (image.getPixel(x, y).a.toInt() < 24) continue;
+        if (image.getPixel(x, y).a.toInt() < 20) continue;
         found = true;
         if (x < minX) minX = x;
         if (x > maxX) maxX = x;
@@ -270,27 +270,41 @@ class ColorKeyService {
 
     final boxW = (maxX - minX + 1).toDouble();
     final boxH = (maxY - minY + 1).toDouble();
-    final band = (boxH * 0.06).clamp(4, 18).toInt();
+    final band = (boxH * 0.14).clamp(10, 36).toInt();
+
     var bMinX = w, bMaxX = 0, bCount = 0;
+    final xs = <int>[];
     for (var y = maxY - band; y <= maxY; y++) {
       if (y < 0) continue;
       for (var x = minX; x <= maxX; x++) {
-        if (image.getPixel(x, y).a.toInt() < 24) continue;
+        if (image.getPixel(x, y).a.toInt() < 20) continue;
         bCount++;
+        xs.add(x);
         if (x < bMinX) bMinX = x;
         if (x > bMaxX) bMaxX = x;
       }
     }
-    if (bCount < 12) return null;
+    if (bCount < 8) return null;
 
-    final bottomW = (bMaxX - bMinX + 1).toDouble();
-    if (bottomW > boxW * 0.46) return null;
+    xs.sort();
+    var bestGap = 0;
+    for (var i = 1; i < xs.length; i++) {
+      final gap = xs[i] - xs[i - 1];
+      if (gap > bestGap) {
+        bestGap = gap;
+      }
+    }
+
+    final left = xs.first.toDouble();
+    final right = xs.last.toDouble();
+    final bottomW = (right - left + 1).clamp(8, boxW);
+    if (bottomW > boxW * 0.78 && bestGap < boxW * 0.08) return null;
 
     return GroundShadow(
-      cx: (bMinX + bMaxX) / 2 / w,
-      cy: (maxY + 6) / h,
-      rx: (bottomW / w) * 0.72,
-      ry: (bottomW / h) * 0.18,
+      cx: ((left + right) / 2) / w,
+      cy: ((maxY + boxH * 0.012).clamp(0, h - 1)) / h,
+      rx: (bottomW / w) * 0.92,
+      ry: (bottomW / h) * 0.28,
     );
   }
 }
