@@ -2,6 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSCameraUsageDescription</key>
+	<string>透過素材と合成して撮影するためにカメラを使います。</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>撮影した画像をアルバムに保存します。</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>保存先の確認と書き込みに使います。</string>
+	<key>CFBundleDisplayName</key>
+	<string>ChromaCam</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>

@@ -2,8 +2,11 @@
 
 PB（#F40671） / BB（#0069FC） / YB（#FDB200）の背景を自動判別して透過し、カメラ映像に重ねて撮影する Flutter アプリです。
 
-非公式の個人制作です。バンダイナムコエンターテインメント および Cygames とは無関係です。
-ゲーム画像は配布しません。自分で撮ったスクリーンショットだけを端末内で処理します。
+非公式の個人制作です。
+
+バンダイナムコエンターテインメントおよび Cygames とは無関係です。ゲーム画像は配布しません。
+
+自分で撮ったスクリーンショットだけを端末内で処理します。
 
 ## できること
 
@@ -23,47 +26,61 @@ PB（#F40671） / BB（#0069FC） / YB（#FDB200）の背景を自動判別し�
 3. 「カメラで撮る」
 4. 位置と大きさを合わせて撮影する
 
-## 動作環境
+## 対応
 
-- Android 8 以降を目安（実機確認済み）
-- カメラ権限、画像保存権限が必要
-- 現時点の配布は Android（APK）が中心
-- iOS はソースからビルド可能だが、App Store 配布は未対応
+| プラットフォーム | 状態 |
+|---|---|
+| Android | APK を Release で配布。実機確認済み |
+| iOS | ソース同梱。Xcode で署名すれば実機に入れられる。TestFlight / App Store は未配布 |
 
-## ビルド
+## Android
 
 ```bash
 flutter pub get
 flutter run
 ```
 
-Android APK:
+APK（端末向けは arm64 だけでよい）:
 
 ```bash
-flutter build apk --release
+flutter build apk --release --split-per-abi
 ```
 
-成果物は `build/app/outputs/flutter-apk/app-release.apk` です。
+`build/app/outputs/flutter-apk/app-arm64-v8a-release.apk` を使います。
 
-iOS（macOS + Xcode が必要）:
+野良 APK です。インストール時に「提供元不明のアプリ」の許可が必要です。
+
+権限はカメラと写真保存です。初回起動時にシステムダイアログが出ます。
+
+## iOS
+
+macOS と Xcode が必要です。Windows / Linux では iOS ビルドはできません。
 
 ```bash
-flutter build ios --release
+flutter pub get
+flutter run
 ```
 
-その後 Xcode で署名して実機またはアーカイブします。
+初回は `ios/Runner.xcworkspace` を Xcode で開き、Runner → Signing & Capabilities で Team を選びます。有料の Apple Developer Program が無くても、自分の iPhone へのデバッグインストールはできます。
 
-## 権限
+他人が GitHub のソースから入れる場合も、各自の Apple ID で署名してください。署名済み ipa の配布はしません。
 
-Android (`android/app/src/main/AndroidManifest.xml`)
+`ios/Runner/Info.plist` に用途説明が必要です。
 
-- `CAMERA`
-- `INTERNET`
-- 保存は `gal` 経由（端末の写真権限ダイアログが出る）
+- `NSCameraUsageDescription` … 合成撮影
+- `NSPhotoLibraryAddUsageDescription` … アルバム保存
+- `NSPhotoLibraryUsageDescription` … 保存先へのアクセス
+- `CFBundleDisplayName` … `ChromaCam`
+
+Flutter 3.47 では CocoaPods の `Podfile` が最初から無いことがあります。Swift Package Manager でビルドされます。`pod install` は必須ではありません。
 
 ## 注意
 
-- いわゆる野良 APK です。インストール時に「提供元不明のアプリ」を許可する必要があります
+- ゲームの素材・公式アセットはリポジトリに含めていません。
+- 
+- `android/local.properties`、署名鍵、`key.properties`、`*.jks` はコミットしない
+- 
+- `ios/Pods/` と `ios/Flutter/ephemeral/` はコミットしない
 
 ## ライセンス
 
