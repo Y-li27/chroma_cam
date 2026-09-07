@@ -1,17 +1,16 @@
-import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
-import 'package:gal/gal.dart';
 import 'package:image/image.dart' as img;
-import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../models/processed_asset.dart';
+import '../services/image_saver.dart';
 
 class CameraScreen extends StatefulWidget {
   const CameraScreen({super.key, required this.assets});
@@ -22,7 +21,8 @@ class CameraScreen extends StatefulWidget {
   State<CameraScreen> createState() => _CameraScreenState();
 }
 
-class _CameraScreenState extends State<CameraScreen> {
+class _CameraScreenState extends State<CameraScreen>
+    with WidgetsBindingObserver {
   static const _landscapeAspect = 4 / 3;
   static const _portraitAspect = 3 / 4;
 
@@ -54,6 +54,7 @@ class _CameraScreenState extends State<CameraScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _layers = [
       for (var i = 0; i < widget.assets.length; i++)
         _Placement(
@@ -65,11 +66,26 @@ class _CameraScreenState extends State<CameraScreen> {
     _initCamera();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      _controller?.dispose();
+      _controller = null;
+      if (mounted) setState(() => _ready = false);
+    } else if (state == AppLifecycleState.resumed) {
+      _initCamera();
+    }
+  }
+
   Future<void> _initCamera() async {
-    final cam = await Permission.camera.request();
-    if (!cam.isGranted) {
-      setState(() => _error = 'カメラ権限が必要です');
-      return;
+    if (!kIsWeb) {
+      final cam = await Permission.camera.request();
+      if (!cam.isGranted) {
+        setState(() => _error = 'カメラ権限が必要です');
+        return;
+      }
     }
     try {
       final cameras = await availableCameras();
@@ -87,29 +103,56 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
+  Future<void> _restartPreview() async {
+    if (!mounted) return;
+    try {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) return;
+      final i = _lens.clamp(0, cameras.length - 1);
+      await _bind(cameras[i]);
+    } catch (_) {}
+  }
+
   Future<void> _bind(CameraDescription desc) async {
     final old = _controller;
     final next = CameraController(
       desc,
-      ResolutionPreset.high,
+      kIsWeb ? ResolutionPreset.max : ResolutionPreset.high,
       enableAudio: false,
-      imageFormatGroup: ImageFormatGroup.jpeg,
+      imageFormatGroup:
+          kIsWeb ? ImageFormatGroup.bgra8888 : ImageFormatGroup.jpeg,
     );
     _controller = next;
     await old?.dispose();
     await next.initialize();
-    _minZoom = await next.getMinZoomLevel();
-    _maxZoom = await next.getMaxZoomLevel();
-    _zoom = _minZoom;
-    await next.setZoomLevel(_zoom);
+    try {
+      _minZoom = await next.getMinZoomLevel();
+      _maxZoom = await next.getMaxZoomLevel();
+      _zoom = _minZoom;
+      await next.setZoomLevel(_zoom);
+    } catch (_) {
+      _minZoom = 1;
+      _maxZoom = 1;
+      _zoom = 1;
+    }
     if (!mounted) return;
-    setState(() => _ready = true);
+    setState(() {
+      _ready = true;
+      _error = null;
+    });
+  }
+
+  double zoomSafe() {
+    if (_maxZoom <= _minZoom) return _minZoom;
+    return _zoom.clamp(_minZoom, _maxZoom);
   }
 
   Future<void> _setZoom(double value) async {
     final z = value.clamp(_minZoom, _maxZoom);
     setState(() => _zoom = z);
-    await _controller?.setZoomLevel(z);
+    try {
+      await _controller?.setZoomLevel(z);
+    } catch (_) {}
   }
 
   Future<void> _flip() async {
@@ -149,7 +192,7 @@ class _CameraScreenState extends State<CameraScreen> {
     setState(() => _saving = true);
     try {
       final shot = await _controller!.takePicture();
-      final bytes = await File(shot.path).readAsBytes();
+      final bytes = await shot.readAsBytes();
       final decoded = img.decodeImage(bytes);
       if (decoded == null) throw StateError('撮影画像を読めませんでした');
 
@@ -159,7 +202,8 @@ class _CameraScreenState extends State<CameraScreen> {
       setState(() {});
 
       if (mounted) {
-        await precacheImage(MemoryImage(bytes), context);
+        await precacheImage(MemoryImage(bytes), context)
+            .timeout(const Duration(seconds: 2), onTimeout: () {});
       }
       await WidgetsBinding.instance.endOfFrame;
       await Future<void>.delayed(const Duration(milliseconds: 80));
@@ -167,7 +211,14 @@ class _CameraScreenState extends State<CameraScreen> {
       final ctx = _boundaryKey.currentContext;
       final boundary = ctx?.findRenderObject() as RenderRepaintBoundary?;
       if (boundary == null) throw StateError('描画領域を取得できません');
-      final image = await boundary.toImage(pixelRatio: 2);
+
+      final box = boundary.size;
+      final long = math.max(box.width, box.height);
+      final ratio = kIsWeb
+          ? (1280 / long).clamp(2.0, 3.0)
+          : (1920 / long).clamp(2.0, 6.0);
+
+      final image = await boundary.toImage(pixelRatio: ratio);
       final raw = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
       final w = image.width;
       final h = image.height;
@@ -180,17 +231,14 @@ class _CameraScreenState extends State<CameraScreen> {
         bytes: raw.buffer,
         order: img.ChannelOrder.rgba,
       );
-      final jpeg = img.encodeJpg(raster, quality: 86);
-
-      final dir = await getTemporaryDirectory();
-      final file = File(
-        '${dir.path}/chroma_${DateTime.now().millisecondsSinceEpoch}.jpg',
+      final jpeg = img.encodeJpg(raster, quality: 90);
+      await saveJpeg(
+        Uint8List.fromList(jpeg),
+        'chroma_${DateTime.now().millisecondsSinceEpoch}.jpg',
       );
-      await file.writeAsBytes(jpeg);
-      await Gal.putImage(file.path, album: 'ChromaCam');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('アルバムへ保存しました')),
+        const SnackBar(content: Text('保存しました')),
       );
     } catch (_) {
       if (!mounted) return;
@@ -200,6 +248,7 @@ class _CameraScreenState extends State<CameraScreen> {
     } finally {
       _stillBytes = null;
       if (mounted) setState(() => _saving = false);
+      await _restartPreview();
     }
   }
 
@@ -232,6 +281,10 @@ class _CameraScreenState extends State<CameraScreen> {
           ),
         ),
       );
+    }
+
+    if (_controller == null || !_controller!.value.isInitialized) {
+      return const ColoredBox(color: Colors.black);
     }
 
     final preview = _controller!.value.previewSize;
@@ -330,6 +383,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _controller?.dispose();
     super.dispose();
   }
@@ -453,176 +507,180 @@ class _CameraScreenState extends State<CameraScreen> {
         color: Colors.black.withValues(alpha: 0.62),
         borderRadius: BorderRadius.circular(16),
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          SizedBox(
-            height: 72,
-            child: ReorderableListView.builder(
-              scrollDirection: Axis.horizontal,
-              buildDefaultDragHandles: false,
-              itemCount: _layers.length,
-              onReorderItem: (from, to) {
-                setState(() {
-                  final item = _layers.removeAt(from);
-                  _layers.insert(to, item);
-                  _selected = to;
-                });
-              },
-              itemBuilder: (_, i) {
-                final item = _layers[i];
-                final on = i == _selected;
-                return ReorderableDelayedDragStartListener(
-                  key: ValueKey(item.asset.id),
-                  index: i,
-                  child: GestureDetector(
-                    onTap: () => setState(() => _selected = i),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 160),
-                      width: 64,
-                      margin: const EdgeInsets.only(right: 8),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: on
-                              ? const Color(0xFFF40671)
-                              : Colors.white24,
-                          width: on ? 2 : 1,
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              height: 72,
+              child: ReorderableListView.builder(
+                scrollDirection: Axis.horizontal,
+                buildDefaultDragHandles: false,
+                itemCount: _layers.length,
+                onReorderItem: (from, to) {
+                  setState(() {
+                    final item = _layers.removeAt(from);
+                    _layers.insert(to, item);
+                    _selected = to;
+                  });
+                },
+                itemBuilder: (_, i) {
+                  final item = _layers[i];
+                  final on = i == _selected;
+                  return ReorderableDelayedDragStartListener(
+                    key: ValueKey(item.asset.id),
+                    index: i,
+                    child: GestureDetector(
+                      onTap: () => setState(() => _selected = i),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 160),
+                        width: 64,
+                        margin: const EdgeInsets.only(right: 8),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: on
+                                ? const Color(0xFFF40671)
+                                : Colors.white24,
+                            width: on ? 2 : 1,
+                          ),
                         ),
-                      ),
-                      child: Opacity(
-                        opacity: item.visible ? 1 : 0.35,
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: Image.memory(
-                            item.asset.pngBytes,
-                            fit: BoxFit.cover,
+                        child: Opacity(
+                          opacity: item.visible ? 1 : 0.35,
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: Image.memory(
+                              item.asset.pngBytes,
+                              fit: BoxFit.cover,
+                            ),
                           ),
                         ),
                       ),
                     ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Text(
+                  layer.asset.keyColor.label,
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                ),
+                const Spacer(),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: layer.showShadow ? '影を消す' : '影を出す',
+                  onPressed: canShadow
+                      ? () => setState(
+                            () => layer.showShadow = !layer.showShadow,
+                          )
+                      : null,
+                  icon: Icon(
+                    layer.showShadow
+                        ? Icons.wb_shade_outlined
+                        : Icons.wb_sunny_outlined,
+                    color: canShadow
+                        ? (layer.showShadow
+                            ? const Color(0xFFFDB200)
+                            : Colors.white)
+                        : Colors.white24,
                   ),
-                );
-              },
+                ),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'この配置をリセット',
+                  onPressed: _resetSelected,
+                  icon: const Icon(Icons.restart_alt, color: Colors.white),
+                ),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: '全部リセット',
+                  onPressed: _resetAll,
+                  icon: const Icon(Icons.settings_backup_restore,
+                      color: Colors.white),
+                ),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => _moveLayer(_selected, -1),
+                  icon: const Icon(Icons.flip_to_back, color: Colors.white),
+                ),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => _moveLayer(_selected, 1),
+                  icon: const Icon(Icons.flip_to_front, color: Colors.white),
+                ),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () =>
+                      setState(() => layer.visible = !layer.visible),
+                  icon: Icon(
+                    layer.visible
+                        ? Icons.visibility_outlined
+                        : Icons.visibility_off_outlined,
+                    color: Colors.white,
+                  ),
+                ),
+              ],
             ),
-          ),
-          const SizedBox(height: 6),
-          Row(
-            children: [
-              Text(
-                layer.asset.keyColor.label,
-                style: const TextStyle(color: Colors.white, fontSize: 12),
-              ),
-              const Spacer(),
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                tooltip: layer.showShadow ? '影を消す' : '影を出す',
-                onPressed: canShadow
-                    ? () => setState(() => layer.showShadow = !layer.showShadow)
-                    : null,
-                icon: Icon(
-                  layer.showShadow
-                      ? Icons.wb_shade_outlined
-                      : Icons.wb_sunny_outlined,
-                  color: canShadow
-                      ? (layer.showShadow
-                          ? const Color(0xFFFDB200)
-                          : Colors.white)
-                      : Colors.white24,
+            Row(
+              children: [
+                const Text('カメラ',
+                    style: TextStyle(color: Colors.white70, fontSize: 11)),
+                Expanded(
+                  child: Slider(
+                    min: _minZoom,
+                    max: _maxZoom <= _minZoom ? _minZoom + 0.01 : _maxZoom,
+                    value: zoomSafe(),
+                    onChanged: _maxZoom <= _minZoom ? null : _setZoom,
+                    activeColor: Colors.white,
+                  ),
                 ),
-              ),
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                tooltip: 'この配置をリセット',
-                onPressed: _resetSelected,
-                icon: const Icon(Icons.restart_alt, color: Colors.white),
-              ),
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                tooltip: '全部リセット',
-                onPressed: _resetAll,
-                icon: const Icon(Icons.settings_backup_restore,
-                    color: Colors.white),
-              ),
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                onPressed: () => _moveLayer(_selected, -1),
-                icon: const Icon(Icons.flip_to_back, color: Colors.white),
-              ),
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                onPressed: () => _moveLayer(_selected, 1),
-                icon: const Icon(Icons.flip_to_front, color: Colors.white),
-              ),
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                onPressed: () =>
-                    setState(() => layer.visible = !layer.visible),
-                icon: Icon(
-                  layer.visible
-                      ? Icons.visibility_outlined
-                      : Icons.visibility_off_outlined,
-                  color: Colors.white,
+                Text(
+                  '${_zoom.toStringAsFixed(1)}x',
+                  style: const TextStyle(color: Colors.white70, fontSize: 11),
                 ),
-              ),
-            ],
-          ),
-          Row(
-            children: [
-              const Text('カメラ',
-                  style: TextStyle(color: Colors.white70, fontSize: 11)),
-              Expanded(
-                child: Slider(
-                  min: _minZoom,
-                  max: _maxZoom <= _minZoom ? _minZoom + 0.01 : _maxZoom,
-                  value: _zoom.clamp(_minZoom, _maxZoom),
-                  onChanged: _maxZoom <= _minZoom ? null : _setZoom,
-                  activeColor: Colors.white,
-                ),
-              ),
-              Text(
-                '${_zoom.toStringAsFixed(1)}x',
-                style: const TextStyle(color: Colors.white70, fontSize: 11),
-              ),
-            ],
-          ),
-          Row(
-            children: [
-              const Text('不透明度',
-                  style: TextStyle(color: Colors.white70, fontSize: 11)),
-              Expanded(
-                child: Slider(
-                  value: layer.opacity,
-                  onChanged: (v) => setState(() => layer.opacity = v),
-                  activeColor: const Color(0xFFF40671),
-                ),
-              ),
-            ],
-          ),
-          Row(
-            children: [
-              const Text('大きさ',
-                  style: TextStyle(color: Colors.white70, fontSize: 11)),
-              Expanded(
-                child: Slider(
-                  min: 0.15,
-                  max: 2.8,
-                  value: layer.scale.clamp(0.15, 2.8),
-                  onChanged: (v) => setState(() => layer.scale = v),
-                  activeColor: const Color(0xFF0069FC),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            '保存はシャッター時点のプレビュー枠です。ピンクの選択枠は入りません。',
-            style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.45),
-              fontSize: 10,
+              ],
             ),
-          ),
-        ],
+            Row(
+              children: [
+                const Text('不透明度',
+                    style: TextStyle(color: Colors.white70, fontSize: 11)),
+                Expanded(
+                  child: Slider(
+                    value: layer.opacity,
+                    onChanged: (v) => setState(() => layer.opacity = v),
+                    activeColor: const Color(0xFFF40671),
+                  ),
+                ),
+              ],
+            ),
+            Row(
+              children: [
+                const Text('大きさ',
+                    style: TextStyle(color: Colors.white70, fontSize: 11)),
+                Expanded(
+                  child: Slider(
+                    min: 0.15,
+                    max: 2.8,
+                    value: layer.scale.clamp(0.15, 2.8),
+                    onChanged: (v) => setState(() => layer.scale = v),
+                    activeColor: const Color(0xFF0069FC),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '保存はシャッター時点のプレビュー枠です。ピンクの選択枠は入りません。',
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.45),
+                fontSize: 10,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -752,9 +810,9 @@ class _GroundShadowPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final cx = shadow.cx * size.width;
-    final cy = (shadow.cy * size.height).clamp(0.0, size.height).toDouble();
-    final rx = (shadow.rx * size.width).clamp(12.0, size.width * 0.55);
-    final ry = (shadow.ry * size.height).clamp(5.0, 28.0);
+    final cy = (shadow.cy * size.height).clamp(0, size.height).toDouble();
+    final rx = (shadow.rx * size.width).clamp(12.0, size.width * 0.55).toDouble();
+    final ry = (shadow.ry * size.height).clamp(5.0, 28.0).toDouble();
 
     final soft = Paint()
       ..color = const Color(0x66000000)

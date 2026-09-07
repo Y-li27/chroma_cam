@@ -1,0 +1,36 @@
+{
+    "name": "chroma_cam",
+    "short_name": "chroma_cam",
+    "start_url": "/chroma_cam/",
+    "scope": "/chroma_cam/",
+    "display": "standalone",
+    "background_color": "#000000",
+    "theme_color": "#F40671",
+    "description": "クロマキャム",
+    "orientation": "any",
+    "prefer_related_applications": false,
+    "icons": [
+        {
+            "src": "icons/Icon.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "icons/Icon.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        },
+        {
+            "src": "icons/Icon.png",
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": "maskable"
+        },
+        {
+            "src": "icons/Icon.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "maskable"
+        }
+    ]
+}
