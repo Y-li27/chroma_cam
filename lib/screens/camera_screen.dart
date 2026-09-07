@@ -128,6 +128,7 @@ class _CameraScreenState extends State<CameraScreen> {
       _layers[i].scale = 0.55;
       _layers[i].opacity = 1;
       _layers[i].visible = true;
+      _layers[i].showShadow = true;
     });
   }
 
@@ -138,6 +139,7 @@ class _CameraScreenState extends State<CameraScreen> {
         _layers[i].scale = 0.55;
         _layers[i].opacity = 1;
         _layers[i].visible = true;
+        _layers[i].showShadow = true;
       }
     });
   }
@@ -444,6 +446,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
   Widget _buildPanel() {
     final layer = _layers[_selected.clamp(0, _layers.length - 1)];
+    final canShadow = layer.asset.shadow != null;
     return Container(
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
       decoration: BoxDecoration(
@@ -511,6 +514,23 @@ class _CameraScreenState extends State<CameraScreen> {
                 style: const TextStyle(color: Colors.white, fontSize: 12),
               ),
               const Spacer(),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                tooltip: layer.showShadow ? '影を消す' : '影を出す',
+                onPressed: canShadow
+                    ? () => setState(() => layer.showShadow = !layer.showShadow)
+                    : null,
+                icon: Icon(
+                  layer.showShadow
+                      ? Icons.wb_shade_outlined
+                      : Icons.wb_sunny_outlined,
+                  color: canShadow
+                      ? (layer.showShadow
+                          ? const Color(0xFFFDB200)
+                          : Colors.white)
+                      : Colors.white24,
+                ),
+              ),
               IconButton(
                 visualDensity: VisualDensity.compact,
                 tooltip: 'この配置をリセット',
@@ -620,6 +640,7 @@ class _Placement {
   double scale;
   double opacity = 1;
   bool visible = true;
+  bool showShadow = true;
 
   double get displayWidth => asset.width * scale * 0.35;
   double get displayHeight =>
@@ -704,7 +725,7 @@ class _DraggableOverlayState extends State<_DraggableOverlay> {
             child: Stack(
               clipBehavior: Clip.none,
               children: [
-                if (p.asset.shadow != null)
+                if (p.showShadow && p.asset.shadow != null)
                   CustomPaint(
                     size: Size(p.displayWidth, p.displayHeight),
                     painter: _GroundShadowPainter(p.asset.shadow!),
