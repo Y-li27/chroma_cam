@@ -1,3 +1,4 @@
+// ignore: deprecated_member_use
 import 'dart:html' as html;
 import 'dart:typed_data';
 
@@ -11,6 +12,7 @@ Future<void> saveJpeg(Uint8List jpeg, String filename) async {
       (ua.contains('Macintosh') && ua.contains('Mobile'));
 
   if (ios) {
+    // ignore: deprecated_member_use
     await Share.shareXFiles(
       [
         XFile.fromData(
